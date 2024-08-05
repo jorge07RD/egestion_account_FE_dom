@@ -70,6 +70,7 @@ class Account_FE_dom(models.TransientModel):
         Encabezado = self.Encabezado
         TipoeCF = self.TipoeCF
         eNCF = self.eNCF
+        FechaVencimientoSecuencia = self.FechaVencimientoSecuencia
 
         
     # region TABLA FORMASPAGO
