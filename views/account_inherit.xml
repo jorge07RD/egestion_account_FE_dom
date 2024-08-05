@@ -1,0 +1,12 @@
+<odoo>
+    <record id="account_view_FE_credito_fiscal_view_move_form_inherited" model="ir.ui.view">
+        <field name="name">account.view.FE.inherited</field>
+        <field name="model">account.move</field>
+        <field name="inherit_id" ref="account.view_move_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//button[@name='button_draft']" position="after">
+                <button name="%(action_FE_credito_fiscal)d" string="test" type="action" />
+            </xpath>
+        </field>
+    </record>
+</odoo>

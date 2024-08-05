@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- View FE_credito_fiscal form -->
+    <record id="view_FE_credito_fiscal_form" model="ir.ui.view">
+        <field name="name">view.FE_credito_fiscal.form</field>
+        <field name="model">account_fe.dom</field>
+        <field name="arch" type="xml">
+            <form string="FE_credito_fiscal">
+                <div class="oe_title">
+
+                    <group name="name" string="string">
+                        <field name="TipoeCF" />
+                        <field name="RNCEmisor" />
+                    </group>
+                </div>
+                <footer>
+                    <button name="test" type="object" string="Add" class="oe_highlight"/>
+                    <button special="cancel" string="Cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- Action FE_credito_fiscal -->
+    <record id="action_FE_credito_fiscal" model="ir.actions.act_window">
+        <field name="name">FE_credito_fiscal</field>
+        <field name="type">ir.actions.act_window</field>
+        <field name="res_model">account_fe.dom</field>
+        <field name="view_mode">form</field>
+        <field name="binding_model_id" ref="model_account_fe_dom"/>
+        <field name="target">new</field>
+    </record>
+
+</odoo>
