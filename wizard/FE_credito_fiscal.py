@@ -2,6 +2,7 @@ import logging
 from odoo import models, fields, api, _
 from odoo.exceptions import UserError, ValidationError
 import re
+from datetime import timedelta
 _logger = logging.getLogger(__name__)
 
 PATRON_CORREO = "\\w+([-+.]\\w+)*@\\w+([-.]\\w+)*\\.\\w+([-.]\\w+)"
@@ -12,12 +13,12 @@ PATRON_MONTOIMPUESTO = "[0-9]{1,16}(\\.[0-9]{1,2})?"
 PATRON_ITBIS = "[0-9]{1,2}"
 PATRON_TASAIMPUESTO = "[0-9]{1,3}(.[0-9]{1,2})?"
 
+
 class Account_FE_dom(models.TransientModel):
     _name = "account_fe.dom"
     _description = _("Account_FE.dom")
 
     # region ENCABEZADO
-    Encabezado = fields.Char(_("Encabezado"))
 
     TipoeCF = fields.Selection(
         [
@@ -43,7 +44,6 @@ class Account_FE_dom(models.TransientModel):
 
     IndicadorMontoGravado = fields.Boolean(_("Indicador de Monto Gravado"))
 
-
     TipoIngresos = fields.Selection(
         [
             ("01", _("Ingresos por operaciones (No financieros)")),
@@ -56,7 +56,7 @@ class Account_FE_dom(models.TransientModel):
         string=_("Tipo de Ingresos"),
     )
 
-    TipoPago = fields.Selection(S
+    TipoPago = fields.Selection(
         [
             ("1", _("Contado")),
             ("2", _("Crédito")),
@@ -65,19 +65,64 @@ class Account_FE_dom(models.TransientModel):
         string=_("Tipo de Pago"),
     )
 
-    def Creacion_encabezado(self):
-        
-        Encabezado = self.Encabezado
-        TipoeCF = self.TipoeCF
-        eNCF = self.eNCF
-        FechaVencimientoSecuencia = self.FechaVencimientoSecuencia
-        IndicadorEnvioDiferido = self.IndicadorEnvioDiferido
-        IndicadorMontoGravado = self.IndicadorMontoGravado
-        TipoIngresos = self.TipoIngresos
-        TipoPago = self.TipoPago
-        
 
-        
+
+    def Creacion_encabezado(self):
+        if self.FormaPago == "5" and self.TipoeCF != "32":
+            raise ValidationError(
+                "Si la forma de pago corresponde a Bonos o Certificados de regalo, el e-CF debe ser Consumo Electrónica"
+            )
+
+        encabezado = {
+            "Encabezado": {
+                "Version": "1.0",
+                "IdDoc": {
+                    "TipoeCF": self.TipoeCF,
+                    "eNCF": self.eNCF,
+                    "FechaVencimientoSecuencia": self.FechaVencimientoSecuencia.strftime('%d-%m-%Y') if self.FechaVencimientoSecuencia and self.TipoeCF not in ["32", "34"] else None,
+                    "IndicadorNotaCredito": 1 if self.TipoeCF == "34" and (fields.Date.today() - self.reversed_entry_id.invoice_date).days > 30 else None,
+                    "IndicadorEnvioDiferido": 1 if self.IndicadorEnvioDiferido else None,
+                    "IndicadorMontoGravado": 1 if self.IndicadorMontoGravado else 0,
+                    "TipoIngresos": self.TipoIngresos,
+                    "TipoPago": self.TipoPago,
+                    "FechaLimitePago": (fields.Date.today() + timedelta(days=self.invoice_payment_term_id.line_ids[0].days)).strftime('%d-%m-%Y') if self.TipoPago == "2" else None,
+                    "TerminoPago": self.TerminoPago,
+                    "TotalPaginas": self.TotalPaginas
+                },
+                "TablaFormasPago": [{
+                    "FormaPago": self.FormaPago,
+                    "MontoPago": self.MontoPago
+                }] if self.FormaPago else None,
+                "TipoCuentaPago": self.TipoCuenta,
+                "NumeroCuentaPago": self.NumeroCuentaPago,
+                "BancoPago": self.BancoPago,
+                "FechaDesde": self.FechaDesde.strftime('%d-%m-%Y') if self.FechaDesde else None,
+                "FechaHasta": self.FechaHasta.strftime('%d-%m-%Y') if self.FechaHasta else None,
+                "Totales": {
+                    "MontoGravadoTotal": sum(line.price_subtotal for line in self.invoice_line_ids if line.tax_ids),
+                    "MontoGravadoI1": sum(line.price_subtotal for line in self.invoice_line_ids if any(tax.amount == 18 for tax in line.tax_ids)),
+                    "MontoGravadoI2": sum(line.price_subtotal for line in self.invoice_line_ids if any(tax.amount == 16 for tax in line.tax_ids)),
+                    "MontoGravadoI3": sum(line.price_subtotal for line in self.invoice_line_ids if any(tax.amount == 0 for tax in line.tax_ids)),
+                    "MontoExento": sum(line.price_subtotal for line in self.invoice_line_ids if not line.tax_ids),
+                    "ITBIS1": 18,
+                    "ITBIS2": 16,
+                    "ITBIS3": 0,
+                    "TotalITBIS": self.amount_tax,
+                    "TotalITBIS1": sum(line.price_total - line.price_subtotal for line in self.invoice_line_ids if any(tax.amount == 18 for tax in line.tax_ids)),
+                    "TotalITBIS2": sum(line.price_total - line.price_subtotal for line in self.invoice_line_ids if any(tax.amount == 16 for tax in line.tax_ids)),
+                    "TotalITBIS3": 0,
+                    "MontoTotal": self.amount_total
+                }
+            }
+        }
+
+        # Eliminar claves con valores None
+        encabezado = {k: v for k, v in encabezado.items() if v is not None}
+        for key, value in encabezado["Encabezado"].items():
+            if isinstance(value, dict):
+                encabezado["Encabezado"][key] = {k: v for k, v in value.items() if v is not None}
+
+        return encabezado
     # region TABLA FORMASPAGO
     # ======================================== TablaFormasPago ========================================
 
@@ -145,35 +190,99 @@ class Account_FE_dom(models.TransientModel):
     FechaHasta = fields.Date(_("Fecha Hasta"))
 
     TotalPaginas = fields.Integer(_("Total de Páginas"))
-    
+
     # endregion
 
     # region EMISOR
 
+    def Creacion_emisor(self):
+        emisor = {
+            "Emisor": {
+                "RNCEmisor": self.RNCEmisor,
+                "RazonSocialEmisor": self.RazonSocialEmisor,
+                "DireccionEmisor": self.DireccionEmisor,
+                "FechaEmision": self.FechaEmision.strftime('%d-%m-%Y') if self.FechaEmision else None
+            }
+        }
+
+        # Campos opcionales
+        if self.NombreComercial:
+            emisor["Emisor"]["NombreComercial"] = self.NombreComercial
+        
+        if self.Sucursal:
+            emisor["Emisor"]["Sucursal"] = self.Sucursal
+        
+        if self.Municipio:
+            emisor["Emisor"]["Municipio"] = self.Municipio
+        
+        if self.Provincia:
+            emisor["Emisor"]["Provincia"] = self.Provincia
+        
+        if self.TelefonoEmisor:
+            emisor["Emisor"]["TablaTelefonoEmisor"] = {
+                "TelefonoEmisor": [self.TelefonoEmisor]
+            }
+        
+        if self.CorreoEmisor:
+            emisor["Emisor"]["CorreoEmisor"] = self.CorreoEmisor
+        
+        if self.WebSite:
+            emisor["Emisor"]["WebSite"] = self.WebSite
+        
+        if self.ActividadEconomica:
+            emisor["Emisor"]["ActividadEconomica"] = self.ActividadEconomica
+        
+        if self.CodigoVendedor and self.TipoeCF not in ['41', '43', '47']:
+            emisor["Emisor"]["CodigoVendedor"] = self.CodigoVendedor
+        
+        if self.NumeroFacturaInterna:
+            emisor["Emisor"]["NumeroFacturaInterna"] = self.NumeroFacturaInterna
+        
+        if self.NumeroPedidoInterno:
+            emisor["Emisor"]["NumeroPedidoInterno"] = self.NumeroPedidoInterno
+        
+        if self.ZonaVenta and self.TipoeCF not in ['41', '43', '47']:
+            emisor["Emisor"]["ZonaVenta"] = self.ZonaVenta
+        
+        if self.RutaVenta and self.TipoeCF not in ['41', '43', '47']:
+            emisor["Emisor"]["RutaVenta"] = self.RutaVenta
+        
+        if self.InformacionAdicionalEmisor:
+            emisor["Emisor"]["InformacionAdicionalEmisor"] = self.InformacionAdicionalEmisor
+
+        # Eliminar claves con valores None
+        emisor = {k: v for k, v in emisor.items() if v is not None}
+        for key, value in emisor["Emisor"].items():
+            if isinstance(value, dict):
+                emisor["Emisor"][key] = {k: v for k, v in value.items() if v is not None}
+            if emisor["Emisor"][key] == {}:
+                emisor["Emisor"][key] = None
+
+        # Eliminar claves con valores None en el nivel superior de Emisor
+        emisor["Emisor"] = {k: v for k, v in emisor["Emisor"].items() if v is not None}
+
+        return emisor
 
     RNCEmisor = fields.Integer(_("RNC Emisor"), required=True)
 
-
     @api.onchange("RNCEmisor")
     def _onchange_rncemisor(self):
-        print('===================================')
+        print("===================================")
         # print(self.RNCEmisor)
-        _logger.info('===================================')
+        _logger.info("===================================")
 
         _logger.info(self.RNCEmisor)
         if self.RNCEmisor:
             if not re.match(PATRON_RNC, str(self.RNCEmisor)):
                 raise ValidationError(_("El RNC debe tener 9 o 11 dígitos"))
 
-
     def test(self):
-        
+
         RNCEmisor = self.RNCEmisor
         TipoeCF = self.TipoeCF
 
         print("RNCEmisor: ", RNCEmisor)
         print("TipoeCF: ", TipoeCF)
-
 
     RazonSocialEmisor = fields.Char(_("Razón Social Emisor"), required=True)
 
@@ -214,14 +323,12 @@ class Account_FE_dom(models.TransientModel):
 
     TelefonoEmisor = fields.Char(_("Teléfono Emisor"))
 
-
     @api.onchange("TelefonoEmisor")
     def _onchange_telefonoemisor(self):
         if not re.match(PATRON_TELEFONO, self.TelefonoEmisor):
             raise ValidationError(_("El teléfono debe tener el formato 000-000-0000"))
 
     CorreoEmisor = fields.Char(_("Correo Emisor"))
-    
 
     @api.onchange("CorreoEmisor")
     def _onchange_correoemisor(self):
@@ -238,12 +345,12 @@ class Account_FE_dom(models.TransientModel):
 
     NumeroPedidoInterno = fields.Integer(_("Número de Pedido Interno"))
 
-
-    
     @api.onchange("NumeroPedidoInterno")
     def _onchange_numeropedidointerno(self):
         if not re.match(PATRON_NUMEROPEDIDOINTERNO, self.NumeroPedidoInterno):
-            raise ValidationError(_("El número de pedido interno debe tener entre 1 y 20 dígitos"))
+            raise ValidationError(
+                _("El número de pedido interno debe tener entre 1 y 20 dígitos")
+            )
 
     ZonaVenta = fields.Char(_("Zona de Venta"))
 
@@ -253,11 +360,8 @@ class Account_FE_dom(models.TransientModel):
 
     FechaEmision = fields.Date(_("Fecha de Emisión"), required=True)
 
-    
-
-
     # endregion
-    
+
     # <xs:element name="Comprador" minOccurs="1" maxOccurs="1">
     #     <xs:complexType>
     #       <xs:sequence>
@@ -281,21 +385,63 @@ class Account_FE_dom(models.TransientModel):
     #     </xs:complexType>
     # </xs:element>
 
-
     # region COMPRADOR
 
-    patron_RNCComprador = "[0-9]{11}|[0-9]{9}"
+
+    def Creacion_comprador(self):
+        comprador = {
+            "Comprador": {}
+        }
+
+        # RNC Comprador o Identificador Extranjero
+        if self.RNCComprador:
+            comprador["Comprador"]["RNCComprador"] = self.RNCComprador
+        elif self.IdentificadorExtranjero:
+            comprador["Comprador"]["IdentificadorExtranjero"] = self.IdentificadorExtranjero
+
+        # Razón Social Comprador
+        if self.RazonSocialComprador:
+            if (self.TipoeCF == "32" and self.MontoPago >= 250000) or \
+            self.TipoeCF in ["33", "34"] or \
+            (self.TipoeCF == "46" and (self.RNCComprador or self.IdentificadorExtranjero)):
+                comprador["Comprador"]["RazonSocialComprador"] = self.RazonSocialComprador
+
+        # Campos adicionales (asumiendo que existen en tu modelo)
+        if hasattr(self, 'ContactoComprador'):
+            comprador["Comprador"]["ContactoComprador"] = self.ContactoComprador
+
+        if hasattr(self, 'CorreoComprador'):
+            comprador["Comprador"]["CorreoComprador"] = self.CorreoComprador
+
+        if hasattr(self, 'DireccionComprador'):
+            comprador["Comprador"]["DireccionComprador"] = self.DireccionComprador
+
+        if hasattr(self, 'MunicipioComprador'):
+            comprador["Comprador"]["MunicipioComprador"] = self.MunicipioComprador
+
+        if hasattr(self, 'ProvinciaComprador'):
+            comprador["Comprador"]["ProvinciaComprador"] = self.ProvinciaComprador
+
+        if self.TipoeCF == "46":
+            if hasattr(self, 'PaisComprador'):
+                comprador["Comprador"]["PaisComprador"] = self.PaisComprador
+
+        # Eliminar claves con valores None o vacíos
+        comprador["Comprador"] = {k: v for k, v in comprador["Comprador"].items() if v}
+
+        if not comprador["Comprador"]:
+            return None
+
+        return comprador
 
 
     RNCComprador = fields.Integer(_("RNC Comprador"))
-
-
 
     IdentificadorExtranjero = fields.Char(_("Identificador Extranjero"))
 
     @api.constrains("RNCComprador", "TipoeCF", "MontoPago", "IdentificadorExtranjero")
     def _constrains_rnccomprador(self):
-        if not re.match(self.patron_RNCComprador, self.RNCComprador):
+        if not re.match(PATRON_RNC, self.RNCComprador):
             raise ValidationError(_("El RNC debe tener 9 o 11 dígitos"))
         if self.TipoeCF == "32" and self.MontoPago >= 250000:
             if not self.RNCComprador:
@@ -304,10 +450,9 @@ class Account_FE_dom(models.TransientModel):
             if not self.RNCComprador and self.MontoPago >= 250000:
                 raise ValidationError(_("Debe indicar el RNC del comprador"))
         if self.TipoeCF == "47" and self.IdentificadorExtranjero and self.RNCComprador:
-            raise ValidationError(_("Si el comprador es extranjero, no puede tener RNC comprador"))
-
-
-
+            raise ValidationError(
+                _("Si el comprador es extranjero, no puede tener RNC comprador")
+            )
 
     # a) Si el e-CF es tipo 32 y el
     #     monto total es ≥
@@ -321,13 +466,11 @@ class Account_FE_dom(models.TransientModel):
     #     indicar nombre o razón social
     #     comprador.
 
-
     # Nombre o Razón Social del comprador.
     # En caso de que el e-CF sea tipo 46, el
     # campo es condicional a que exista el
     # campo ‘RNC Comprador’ o
     # ‘Identificador Extranjero’.
-
 
     RazonSocialComprador = fields.Char(_("Razón Social Comprador"))
 
@@ -342,8 +485,6 @@ class Account_FE_dom(models.TransientModel):
         if self.TipoeCF == "46":
             if not self.RazonSocialComprador:
                 raise ValidationError(_("Debe indicar la razón social del comprador"))
-
-
 
     # <xs:element name="MontoGravadoTotal" type="Decimal18D1or2ValidationTypeMayorIgualCero" minOccurs="0" maxOccurs="1"/>
     # <xs:element name="MontoGravadoI1" type="Decimal18D1or2ValidationTypeMayorIgualCero" minOccurs="0" maxOccurs="1"/>
@@ -367,36 +508,43 @@ class Account_FE_dom(models.TransientModel):
     @api.onchange("MontoGravadoTotal")
     def _onchange_montogravadototal(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.MontoGravadoTotal):
-            raise ValidationError(_("El monto gravado total debe tener entre 1 y 16 dígitos"))
+            raise ValidationError(
+                _("El monto gravado total debe tener entre 1 y 16 dígitos")
+            )
 
     MontoGravadoI1 = fields.Float(_("Monto Gravado I1"))
 
     @api.onchange("MontoGravadoI1")
     def _onchange_montogravadoi1(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.MontoGravadoI1):
-            raise ValidationError(_("El monto gravado I1 debe tener entre 1 y 16 dígitos"))
+            raise ValidationError(
+                _("El monto gravado I1 debe tener entre 1 y 16 dígitos")
+            )
 
     MontoGravadoI2 = fields.Float(_("Monto Gravado I2"))
 
     @api.onchange("MontoGravadoI2")
     def _onchange_montogravadoi2(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.MontoGravadoI2):
-            raise ValidationError(_("El monto gravado I2 debe tener entre 1 y 16 dígitos"))
-    
+            raise ValidationError(
+                _("El monto gravado I2 debe tener entre 1 y 16 dígitos")
+            )
+
     MontoGravadoI3 = fields.Float(_("Monto Gravado I3"))
 
     @api.onchange("MontoGravadoI3")
     def _onchange_montogravadoi3(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.MontoGravadoI3):
-            raise ValidationError(_("El monto gravado I3 debe tener entre 1 y 16 dígitos"))
-    
+            raise ValidationError(
+                _("El monto gravado I3 debe tener entre 1 y 16 dígitos")
+            )
+
     MontoExento = fields.Float(_("Monto Exento"))
 
     @api.onchange("MontoExento")
     def _onchange_montoexento(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.MontoExento):
             raise ValidationError(_("El monto exento debe tener entre 1 y 16 dígitos"))
-
 
     ITBIS1 = fields.Integer(_("ITBIS1"))
 
@@ -446,15 +594,15 @@ class Account_FE_dom(models.TransientModel):
     def _onchange_totalitbis3(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.TotalITBIS3):
             raise ValidationError(_("El total ITBIS3 debe tener entre 1 y 16 dígitos"))
-    
+
     MontoImpuestoAdicional = fields.Float(_("Monto Impuesto Adicional"))
 
     @api.onchange("MontoImpuestoAdicional")
     def _onchange_montoimpuestoadicional(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.MontoImpuestoAdicional):
-            raise ValidationError(_("El monto impuesto adicional debe tener entre 1 y 16 dígitos"))
-
-
+            raise ValidationError(
+                _("El monto impuesto adicional debe tener entre 1 y 16 dígitos")
+            )
 
     # region TABLA IMPUESTOSADICIONALES
     # ======================================== ImpuestosAdicionales ========================================
@@ -465,10 +613,48 @@ class Account_FE_dom(models.TransientModel):
     # <xs:element name="MontoImpuestoSelectivoConsumoAdvalorem" type="Decimal18D1or2ValidationTypeMayorCero" minOccurs="0" maxOccurs="1"/>
     # <xs:element name="OtrosImpuestosAdicionales" type="Decimal18D1or2ValidationTypeMayorCero" minOccurs="0" maxOccurs="1"/>
 
+    def Creacion_impuestos_adicionales(self):
+        impuestos_adicionales = {
+            "ImpuestosAdicionales": []
+        }
+
+        # Función auxiliar para formatear los números float
+        def format_float(value):
+            return f"{value:.2f}" if value is not None else None
+
+        # Verificar si hay impuestos adicionales
+        if self.TipoImpuesto:
+            impuesto = {
+                "TipoImpuesto": self.TipoImpuesto,
+                "TasaImpuestoAdicional": format_float(self.TasaImpuestoAdicional)
+            }
+
+            if self.MontoImpuestoSelectivoConsumoEspecifico:
+                impuesto["MontoImpuestoSelectivoConsumoEspecifico"] = format_float(self.MontoImpuestoSelectivoConsumoEspecifico)
+
+            if self.MontoImpuestoSelectivoConsumoAdvalorem:
+                impuesto["MontoImpuestoSelectivoConsumoAdvalorem"] = format_float(self.MontoImpuestoSelectivoConsumoAdvalorem)
+
+            if self.OtrosImpuestosAdicionales:
+                impuesto["OtrosImpuestosAdicionales"] = format_float(self.OtrosImpuestosAdicionales)
+
+            impuestos_adicionales["ImpuestosAdicionales"].append(impuesto)
+
+        # Si no hay impuestos adicionales, retornar None
+        if not impuestos_adicionales["ImpuestosAdicionales"]:
+            return None
+
+        return impuestos_adicionales
+
     TipoImpuesto = fields.Selection(
         [
             ("001", _("Propina Legal")),
-            ("002", _("Contribución al Desarrollo de las Telecomunicaciones Ley 153-98 Art. 45")),
+            (
+                "002",
+                _(
+                    "Contribución al Desarrollo de las Telecomunicaciones Ley 153-98 Art. 45"
+                ),
+            ),
             ("003", _("Servicios Seguros en general")),
             ("004", _("Servicios de Telecomunicaciones")),
             ("005", _("Expedición de la primera placa")),
@@ -506,7 +692,6 @@ class Account_FE_dom(models.TransientModel):
             ("037", _("los demas Cigarrillos que contengan 20 unidades")),
             ("038", _("Cigarrillos que contengan 10 unidades")),
             ("039", _("Los demás Cigarrillos que contengan 10 unidades")),
-
         ]
     )
 
@@ -515,29 +700,48 @@ class Account_FE_dom(models.TransientModel):
     @api.onchange("TasaImpuestoAdicional")
     def _onchange_tasaimpuestoadicional(self):
         if not re.match(PATRON_TASAIMPUESTO, self.TasaImpuestoAdicional):
-            raise ValidationError(_("La tasa de impuesto adicional debe tener entre 1 y 3 dígitos"))
-        
-    MontoImpuestoSelectivoConsumoEspecifico = fields.Float(_("Monto Impuesto Selectivo Consumo Específico"))
+            raise ValidationError(
+                _("La tasa de impuesto adicional debe tener entre 1 y 3 dígitos")
+            )
+
+    MontoImpuestoSelectivoConsumoEspecifico = fields.Float(
+        _("Monto Impuesto Selectivo Consumo Específico")
+    )
 
     @api.onchange("MontoImpuestoSelectivoConsumoEspecifico")
     def _onchange_montoimpuestoselectivoconsumoespecifico(self):
-        if not re.match(PATRON_MONTOIMPUESTO, self.MontoImpuestoSelectivoConsumoEspecifico):
-            raise ValidationError(_("El monto impuesto selectivo consumo específico debe tener entre 1 y 16 dígitos"))
+        if not re.match(
+            PATRON_MONTOIMPUESTO, self.MontoImpuestoSelectivoConsumoEspecifico
+        ):
+            raise ValidationError(
+                _(
+                    "El monto impuesto selectivo consumo específico debe tener entre 1 y 16 dígitos"
+                )
+            )
 
-    MontoImpuestoSelectivoConsumoAdvalorem = fields.Float(_("Monto Impuesto Selectivo Consumo Advalorem"))
+    MontoImpuestoSelectivoConsumoAdvalorem = fields.Float(
+        _("Monto Impuesto Selectivo Consumo Advalorem")
+    )
 
     @api.onchange("MontoImpuestoSelectivoConsumoAdvalorem")
     def _onchange_montoimpuestoselectivoconsumoadvalorem(self):
-        if not re.match(PATRON_MONTOIMPUESTO, self.MontoImpuestoSelectivoConsumoAdvalorem):
-            raise ValidationError(_("El monto impuesto selectivo consumo advalorem debe tener entre 1 y 16 dígitos"))
+        if not re.match(
+            PATRON_MONTOIMPUESTO, self.MontoImpuestoSelectivoConsumoAdvalorem
+        ):
+            raise ValidationError(
+                _(
+                    "El monto impuesto selectivo consumo advalorem debe tener entre 1 y 16 dígitos"
+                )
+            )
 
     OtrosImpuestosAdicionales = fields.Float(_("Otros Impuestos Adicionales"))
 
     @api.onchange("OtrosImpuestosAdicionales")
     def _onchange_otrosimpuestosadicionales(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.OtrosImpuestosAdicionales):
-            raise ValidationError(_("Los otros impuestos adicionales deben tener entre 1 y 16 dígitos"))
-            
+            raise ValidationError(
+                _("Los otros impuestos adicionales deben tener entre 1 y 16 dígitos")
+            )
 
     # ======================================== FIN ImpuestosAdicionales ========================================
 
@@ -551,7 +755,7 @@ class Account_FE_dom(models.TransientModel):
     # <xs:element name="TotalISRRetencion" type="Decimal18D1or2ValidationTypeMayorIgualCero" minOccurs="0" maxOccurs="1"/>
     # <xs:element name="TotalITBISPercepcion" type="Decimal18D1or2ValidationTypeMayorIgualCero" minOccurs="0" maxOccurs="1"/>
     # <xs:element name="TotalISRPercepcion" type="Decimal18D1or2ValidationTypeMayorIgualCero" minOccurs="0" maxOccurs="1"/>
-                  
+
     MontoTotal = fields.Float(_("Monto Total"), required=True)
 
     @api.onchange("MontoTotal")
@@ -564,37 +768,127 @@ class Account_FE_dom(models.TransientModel):
     @api.onchange("MontoNoFacturable")
     def _onchange_montonofacturable(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.MontoNoFacturable):
-            raise ValidationError(_("El monto no facturable debe tener entre 1 y 16 dígitos"))
+            raise ValidationError(
+                _("El monto no facturable debe tener entre 1 y 16 dígitos")
+            )
 
     TotalITBISRetenido = fields.Float(_("Total ITBIS Retenido"))
 
     @api.onchange("TotalITBISRetenido")
     def _onchange_totalitbisretenido(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.TotalITBISRetenido):
-            raise ValidationError(_("El total ITBIS retenido debe tener entre 1 y 16 dígitos"))
+            raise ValidationError(
+                _("El total ITBIS retenido debe tener entre 1 y 16 dígitos")
+            )
 
     TotalITBISPercepcion = fields.Float(_("Total ITBIS Percepción"))
 
     @api.onchange("TotalITBISPercepcion")
     def _onchange_totalitbispercepcion(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.TotalITBISPercepcion):
-            raise ValidationError(_("El total ITBIS percepción debe tener entre 1 y 16 dígitos"))
+            raise ValidationError(
+                _("El total ITBIS percepción debe tener entre 1 y 16 dígitos")
+            )
 
     TotalISRRetencion = fields.Float(_("Total ISR Retención"))
 
     @api.onchange("TotalISRRetencion")
     def _onchange_totalisrretencion(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.TotalISRRetencion):
-            raise ValidationError(_("El total ISR retención debe tener entre 1 y 16 dígitos"))
+            raise ValidationError(
+                _("El total ISR retención debe tener entre 1 y 16 dígitos")
+            )
 
     TotalISRPercepcion = fields.Float(_("Total ISR Percepción"))
 
     @api.onchange("TotalISRPercepcion")
     def _onchange_totalisrpercepcion(self):
         if not re.match(PATRON_MONTOIMPUESTO, self.TotalISRPercepcion):
-            raise ValidationError(_("El total ISR percepción debe tener entre 1 y 16 dígitos"))
+            raise ValidationError(
+                _("El total ISR percepción debe tener entre 1 y 16 dígitos")
+            )
 
-    
 
 
-    
+    TipoMoneda = fields.Selection([
+        ('USD', 'Dólar Estadounidense'),
+        ('EUR', 'Euro'),
+        # Añadir más monedas según sea necesario
+    ], string='Código Otra Moneda', help="Moneda alternativa en que se expresan los Montos.")
+
+    TipoCambio = fields.Float(string='Tipo de Cambio', digits=(3, 4),
+                              help="Factor de conversión utilizado.")
+
+    MontoGravadoTotalOtraMoneda = fields.Float(string='Monto Gravado Total Otra Moneda', digits=(16, 2))
+    MontoGravado1OtraMoneda = fields.Float(string='Monto Gravado ITBIS Tasa 1 Otra Moneda', digits=(16, 2))
+    MontoGravado2OtraMoneda = fields.Float(string='Monto Gravado ITBIS Tasa 2 Otra Moneda', digits=(16, 2))
+    MontoGravado3OtraMoneda = fields.Float(string='Monto Gravado ITBIS Tasa 3 Otra Moneda', digits=(16, 2))
+    MontoExentoOtraMoneda = fields.Float(string='Monto Exento en Otra Moneda', digits=(16, 2))
+    TotalITBISOtraMoneda = fields.Float(string='Total ITBIS en Otra Moneda', digits=(16, 2))
+    TotalITBIS1OtraMoneda = fields.Float(string='Total ITBIS Tasa 1 en Otra Moneda', digits=(16, 2))
+    TotalITBIS2OtraMoneda = fields.Float(string='Total ITBIS Tasa 2 en Otra Moneda', digits=(16, 2))
+    TotalITBIS3OtraMoneda = fields.Float(string='Total ITBIS Tasa 3 en Otra Moneda', digits=(16, 2))
+    MontoImpuestoAdicionalOtraMoneda = fields.Float(string='Monto del Impuesto Adicional en Otra Moneda', digits=(16, 2))
+    MontoTotalOtraMoneda = fields.Float(string='Monto Total en Otra Moneda', digits=(16, 2))
+
+    # Campos para Impuestos Adicionales en Otra Moneda
+    TipoImpuestoOtraMoneda = fields.Selection([
+        ('001', 'Propina Legal'),
+        ('002', 'Contribución al Desarrollo de las Telecomunicaciones'),
+        # Añadir más tipos de impuestos según sea necesario
+    ], string='Código de Impuesto Adicional en Otra Moneda')
+
+    TasaImpuestoAdicionalOtraMoneda = fields.Float(string='Tasa de Impuesto Adicional en Otra Moneda', digits=(5, 2))
+    MontoImpuestoSelectivoConsumoEspecificoOtraMoneda = fields.Float(
+        string='Monto Impuesto Selectivo al Consumo Específico en Otra Moneda', digits=(16, 2))
+    MontoImpuestoSelectivoConsumoAdvaloremOtraMoneda = fields.Float(
+        string='Monto Impuesto Selectivo al Consumo Ad Valorem en Otra Moneda', digits=(16, 2))
+    OtrosImpuestosAdicionalesOtraMoneda = fields.Float(
+        string='Monto Otros Impuestos Adicionales en Otra Moneda', digits=(16, 2))
+
+    @api.constrains('TipoCambio')
+    def _check_tipo_cambio(self):
+        for record in self:
+            if record.TipoCambio <= 0:
+                raise ValidationError(_("El Tipo de Cambio debe ser mayor que cero."))
+
+    def Creacion_otra_moneda_encabezado(self):
+        self.ensure_one()
+        otra_moneda = {}
+
+        if self.TipoMoneda:
+            otra_moneda = {
+                "TipoMoneda": self.TipoMoneda,
+                "TipoCambio": round(self.TipoCambio, 4),
+                "MontoGravadoTotalOtraMoneda": round(self.MontoGravadoTotalOtraMoneda, 2),
+                "MontoGravado1OtraMoneda": round(self.MontoGravado1OtraMoneda, 2),
+                "MontoGravado2OtraMoneda": round(self.MontoGravado2OtraMoneda, 2),
+                "MontoGravado3OtraMoneda": round(self.MontoGravado3OtraMoneda, 2),
+                "MontoExentoOtraMoneda": round(self.MontoExentoOtraMoneda, 2),
+                "TotalITBISOtraMoneda": round(self.TotalITBISOtraMoneda, 2),
+                "TotalITBIS1OtraMoneda": round(self.TotalITBIS1OtraMoneda, 2),
+                "TotalITBIS2OtraMoneda": round(self.TotalITBIS2OtraMoneda, 2),
+                "TotalITBIS3OtraMoneda": round(self.TotalITBIS3OtraMoneda, 2),
+                "MontoImpuestoAdicionalOtraMoneda": round(self.MontoImpuestoAdicionalOtraMoneda, 2),
+                "MontoTotalOtraMoneda": round(self.MontoTotalOtraMoneda, 2)
+            }
+
+            # Impuestos Adicionales en Otra Moneda
+            if self.TipoImpuestoOtraMoneda:
+                impuestos_adicionales = {
+                    "TipoImpuestoOtraMoneda": self.TipoImpuestoOtraMoneda,
+                    "TasaImpuestoAdicionalOtraMoneda": round(self.TasaImpuestoAdicionalOtraMoneda, 2),
+                }
+                if self.MontoImpuestoSelectivoConsumoEspecificoOtraMoneda:
+                    impuestos_adicionales["MontoImpuestoSelectivoConsumoEspecificoOtraMoneda"] = round(self.MontoImpuestoSelectivoConsumoEspecificoOtraMoneda, 2)
+                if self.MontoImpuestoSelectivoConsumoAdvaloremOtraMoneda:
+                    impuestos_adicionales["MontoImpuestoSelectivoConsumoAdvaloremOtraMoneda"] = round(self.MontoImpuestoSelectivoConsumoAdvaloremOtraMoneda, 2)
+                if self.OtrosImpuestosAdicionalesOtraMoneda:
+                    impuestos_adicionales["OtrosImpuestosAdicionalesOtraMoneda"] = round(self.OtrosImpuestosAdicionalesOtraMoneda, 2)
+
+                otra_moneda["ImpuestosAdicionalesOtraMoneda"] = [impuestos_adicionales]
+
+        # Eliminar claves con valores None o 0
+        otra_moneda = {k: v for k, v in otra_moneda.items() if v not in [None, 0, 0.0]}
+
+        return {"OtraMoneda": otra_moneda} if otra_moneda else None
