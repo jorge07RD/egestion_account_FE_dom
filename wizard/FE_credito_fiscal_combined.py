@@ -78,7 +78,13 @@ class AccountFEDomCombined(models.TransientModel):
         xml_string = self.generate_combined_xml()
         
         # Directorio base de los archivos XSD
-        xsd_base_path = "../egestion_account_FE_dom/static/src/xml"
+
+        # Linux
+        xsd_base_path = "/home/modulos_odoo/egestion_account_FE_dom/static/src/xml"
+            
+        # Windows
+        # xsd_base_path = "C:/Users/jorje/Documents/python proyec/trash/firma de semilla digital/egestion_account_FE_dom/static/src/xml"
+
         
         # Seleccionar los archivos XSD apropiados basados en el tipo de comprobante
         xsd_files = []
